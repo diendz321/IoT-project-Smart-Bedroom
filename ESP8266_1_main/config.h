@@ -30,3 +30,13 @@
 #define TOPIC_SUB_LIGHT_CONTROL "smartroom/control/light"   // Nhan "ON" hoac "OFF"
 #define TOPIC_SUB_TEMP_THRESHOLD "smartroom/config/temp_threshold"
 #define TOPIC_SUB_ALARM_TIME "smartroom/config/alarm_time"
+
+//Cảm biến ánh sáng 
+// Chân cảm biến ánh sáng (LDR) - ESP8266 chỉ có 1 chân Analog là A0
+#define LDR_PIN A0 
+
+// Chân điều khiển Đèn ngủ (Ví dụ D5, bạn sửa lại theo dây cắm thật)
+#define NIGHT_LIGHT_PIN D5 
+
+// Ngưỡng ánh sáng: Dưới mức này coi là "Tối" (0-1023)
+#define LDR_THRESHOLD 400

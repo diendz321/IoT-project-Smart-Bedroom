@@ -20,3 +20,18 @@ void controlServo(bool isOpen) {
   // Neu isOpen == true -> servo.write(90);
   // else -> servo.write(0);
 }
+
+// --- THÊM VÀO CUỐI actuators.cpp ---
+
+void initNightLight() {
+  pinMode(NIGHT_LIGHT_PIN, OUTPUT);
+  digitalWrite(NIGHT_LIGHT_PIN, LOW); // Mặc định tắt
+}
+
+void controlNightLight(bool state) {
+  if (state) {
+    digitalWrite(NIGHT_LIGHT_PIN, HIGH); // Bật đèn
+  } else {
+    digitalWrite(NIGHT_LIGHT_PIN, LOW);  // Tắt đèn
+  }
+}
