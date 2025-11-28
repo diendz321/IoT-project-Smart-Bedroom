@@ -1,0 +1,238 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+// --- 1. Cấu hình Wifi & MQTT ---
+#define WIFI_SSID       "TEN_WIFI_CUA_BAN"
+#define WIFI_PASS       "MAT_KHAU_WIFI"
+#define MQTT_SERVER     "192.168.1.xxx"  // IP của Broker
+#define MQTT_PORT       1883
+
+// --- 2. Định nghĩa Chân (Pin Mapping) ---
+// Lưu ý: D1, D2 dành cho OLED (I2C) nên tránh dùng
+#define PIN_DHT         D4      // Cảm biến nhiệt độ
+#define PIN_FAN         D5      // Chân PWM điều khiển quạt (L298N/Mosfet)
+#define PIN_PIR         D6      // Cảm biến người (PIR/Sonar)
+
+// --- 3. Loại cảm biến ---
+#define DHT_TYPE        DHT11   // Đổi thành DHT22 nếu dùng loại màu trắng
+
+// --- 4. MQTT Topics (Các chủ đề để giao tiếp) ---
+#define TOPIC_FAN_CONTROL   "home/fan/control"    // Nhận lệnh 0-3 từ Blynk
+#define TOPIC_TEMP_THRESH   "home/temp/threshold" // Nhận ngưỡng nhiệt độ
+#define TOPIC_PUB_TEMP      "home/sensor/temp"    // Gửi nhiệt độ lên
+#define TOPIC_PUB_MOTION    "home/sensor/motion"  // Gửi trạng thái người lên
+
+#endif
+#ifndef SENSORS_H
+#define SENSORS_H
+
+#include <Arduino.h>
+#include <DHT.h>
+#include "config.h"
+
+// Khởi tạo cảm biến
+void initSensors();
+
+// Đọc nhiệt độ (trả về độ C)
+float getTemperature();
+
+// Kiểm tra có người không (trả về true/false)
+bool isPersonDetected();
+
+#endif
+#include "sensors.h"
+
+// Khởi tạo đối tượng DHT
+DHT dht(PIN_DHT, DHT_TYPE);
+
+void initSensors() {
+  pinMode(PIN_PIR, INPUT);
+  dht.begin();
+}
+
+float getTemperature() {
+  float t = dht.readTemperature();
+  // Kiểm tra nếu đọc lỗi thì trả về giá trị cũ hoặc -1
+  if (isnan(t)) {
+    return -1.0; 
+  }
+  return t;
+}
+
+bool isPersonDetected() {
+  // Giả sử cảm biến PIR/Sonar trả về HIGH khi có người
+  return digitalRead(PIN_PIR) == HIGH;
+}
+#ifndef ACTUATORS_H
+#define ACTUATORS_H
+
+#include <Arduino.h>
+#include "config.h"
+
+// Khởi tạo chân điều khiển quạt
+void initActuators();
+
+// Hàm điều khiển tốc độ quạt dựa trên mức từ Blynk (0, 1, 2, 3)
+// level: 0=Off, 1=Low, 2=Medium, 3=High
+void setFanSpeed(int level);
+
+#endif
+#include "actuators.h"
+
+void initActuators() {
+  pinMode(PIN_FAN, OUTPUT);
+  // Đảm bảo quạt tắt khi khởi động
+  analogWrite(PIN_FAN, 0);
+}
+
+void setFanSpeed(int level) {
+  int pwmValue = 0;
+  
+  switch (level) {
+    case 0: // OFF
+      pwmValue = 0;
+      break;
+    case 1: // LOW
+      pwmValue = 400; // Cần test thực tế để quạt quay được
+      break;
+    case 2: // MEDIUM
+      pwmValue = 700;
+      break;
+    case 3: // HIGH
+      pwmValue = 1023; // Max tốc độ (10bit)
+      break;
+    default:
+      pwmValue = 0;
+      break;
+  }
+  
+  // Xuất xung PWM ra chân quạt
+  analogWrite(PIN_FAN, pwmValue);
+}
+#include <ESP8266WiFi.h>
+#include <PubSubClient.h>
+#include "config.h"
+#include "sensors.h"
+#include "actuators.h"
+
+// --- Biến toàn cục quản lý trạng thái ---
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+int blynkMode = 0;          // 0: Auto, 1-3: Manual levels
+float tempThreshold = 30.0; // Ngưỡng nhiệt mặc định
+float currentTemp = 0.0;
+bool hasPerson = false;
+
+unsigned long lastMsgTime = 0;
+
+// --- Hàm kết nối Wifi ---
+void setup_wifi() {
+  delay(10);
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(WIFI_SSID);
+
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi connected");
+}
+
+// --- Hàm nhận dữ liệu MQTT (Callback) ---
+void callback(char* topic, byte* payload, unsigned int length) {
+  String message;
+  for (int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+  Serial.print("Message received ["); Serial.print(topic); Serial.print("]: "); Serial.println(message);
+
+  // 1. Nhận lệnh điều khiển quạt từ Blynk
+  if (String(topic) == TOPIC_FAN_CONTROL) {
+    blynkMode = message.toInt(); // 0, 1, 2, 3
+    processFanLogic(); // Cập nhật quạt ngay lập tức
+  }
+  // 2. Nhận ngưỡng nhiệt độ mới
+  else if (String(topic) == TOPIC_TEMP_THRESH) {
+    tempThreshold = message.toFloat();
+  }
+}
+
+// --- Hàm kết nối lại MQTT ---
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    if (client.connect("ESP8266_Node1_Sensor")) {
+      Serial.println("connected");
+      // Đăng ký nhận tin nhắn
+      client.subscribe(TOPIC_FAN_CONTROL);
+      client.subscribe(TOPIC_TEMP_THRESH);
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      delay(5000);
+    }
+  }
+}
+
+// --- LOGIC TRUNG TÂM: Xử lý Tự động vs Thủ công ---
+void processFanLogic() {
+  // TH1: Chế độ THỦ CÔNG (Người dùng chọn 1, 2, 3)
+  if (blynkMode > 0) {
+    Serial.print("Manual Mode: Level "); Serial.println(blynkMode);
+    setFanSpeed(blynkMode);
+  }
+  // TH2: Chế độ TỰ ĐỘNG (Người dùng chọn 0)
+  else {
+    Serial.print("Auto Mode: ");
+    // Logic: Nhiệt > Ngưỡng VÀ Có người -> Bật mức trung bình (2)
+    if (currentTemp > tempThreshold && hasPerson) {
+      Serial.println("ON (Temp High & Person detected)");
+      setFanSpeed(2); // Auto chạy mức Medium
+    } else {
+      Serial.println("OFF");
+      setFanSpeed(0);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Khởi tạo các module con
+  initSensors();
+  initActuators();
+  
+  setup_wifi();
+  client.setServer(MQTT_SERVER, MQTT_PORT);
+  client.setCallback(callback);
+}
+
+void loop() {
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+
+  // Đọc cảm biến định kỳ (2 giây / lần)
+  unsigned long now = millis();
+  if (now - lastMsgTime > 2000) {
+    lastMsgTime = now;
+
+    // 1. Đọc cảm biến
+    float t = getTemperature();
+    if (t != -1.0) currentTemp = t;
+    hasPerson = isPersonDetected();
+
+    // 2. Gửi dữ liệu lên MQTT (để Node 2 hiển thị)
+    client.publish(TOPIC_PUB_TEMP, String(currentTemp).c_str());
+    client.publish(TOPIC_PUB_MOTION, hasPerson ? "1" : "0");
+    
+    // 3. Chạy logic điều khiển quạt
+    processFanLogic();
+  }
+}
